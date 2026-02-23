@@ -15,11 +15,11 @@
 
 /** README(student):
  We provide a way to validate consistency between wire layout
- and occupancy. Within the program, a wire checker is provided 
+ and occupancy. Within the program, a wire checker is provided
  by:
  wr_checker Checker(wires, occupancy);
  and its validate() method can be called to validate the consistency.
- 
+
  The struct below is the standard format for wires used by the wire checker.
  It contains a buffer that holds up to MAX_PTS_PER_WIRE points, and a num_pts
  field that specifies the number of points. Regardless of what representation you use for your wires, you should
@@ -59,12 +59,93 @@ int start_x, start_y, end_x, end_y, bend1_x, bend1_y, bend2_x, bend2_y, bend3_x,
 bend3_y; but this might not be the most efficient way to define the solution
 space for a wire with <= 3 bends.
 */
-struct Wire {
-  /* Define the data structure for wire here. */
-  int start_x, start_y, end_x, end_y, mid_x, mid_y;
-  bool move_x_start, move_x_end;
-  validate_wire_t to_validate_format(void) const;
+struct Point {
+  int x;
+  int y;
+  bool operator==(const Point& o) const {
+    return x == o.x && y == o.y;
+  }
 };
+
+static inline int sgn (int v) {
+  if (v > 0) return 1;
+  if (v == 0) return 0;
+  return -1;
+}
+struct Wire {
+    int num_pts;                     // number of keypoints actually used
+    Point pts[MAX_PTS_PER_WIRE];     // pts[0]=start, pts[num_pts-1]=end
+
+    validate_wire_t to_validate_format() const {
+        validate_wire_t v{};
+        v.num_pts = num_pts;
+        for (int i = 0; i < num_pts; i++) {
+            v.p[i].x = pts[i].x;
+            v.p[i].y = pts[i].y;
+        }
+        return v;
+    }
+
+    struct Iterator {
+        const Wire* w;
+        int seg;        // current segment index
+        Point cur;      // current lattice point
+        int dx, dy;     // step direction
+        bool done;
+
+        Iterator(const Wire* wire, bool is_end)
+            : w(wire), seg(0), dx(0), dy(0), done(is_end)
+        {
+            if (!done && w->num_pts > 0) {
+                cur = w->pts[0];
+                load_dir();
+            } else {
+                done = true;
+            }
+        }
+
+        void load_dir() {
+            if (seg >= w->num_pts - 1) {
+                done = true;
+                return;
+            }
+            Point nxt = w->pts[seg + 1];
+            dx = sgn(nxt.x - cur.x);
+            dy = sgn(nxt.y - cur.y);
+        }
+
+        Point operator*() const { return cur; }
+
+        Iterator& operator++() {
+            if (done) return *this;
+
+            Point target = w->pts[seg + 1];
+
+            // If reached end of this segment, move to next
+            if (cur == target) {
+                seg++;
+                if (seg >= w->num_pts - 1) {
+                    done = true;
+                    return *this;
+                }
+                load_dir();
+                target = w->pts[seg + 1];
+            }
+
+            cur.x += dx;
+            cur.y += dy;
+            return *this;
+        }
+
+        bool operator!=(const Iterator& other) const {
+            return done != other.done;
+        }
+    };
+
+    Iterator begin() const { return Iterator(this, false); }
+    Iterator end()   const { return Iterator(this, true); }
+};
+
 
 // Definition of the wire checker
 struct wr_checker {

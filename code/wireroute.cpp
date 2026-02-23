@@ -19,7 +19,189 @@
 #include <omp.h>
 #include <unistd.h>
 
-void print_stats(const std::vector<std::vector<int>> &occupancy) {
+#define N_ITERS 5
+#define MAX_COST 999999999
+
+typedef std::vector<Wire> wire_set_t;
+typedef std::vector<std::vector<int>> matrix_t;
+
+inline bool on_same_line(Point start, Point end)  {
+  return start.x == end.x || start.y == end.y;
+}
+
+wire_set_t get_all_wires(Point start, Point end) {
+  wire_set_t ws;
+  // first check if the endpoints lie on the same line.
+  if (start.x == end.x || start.y == end.y) {
+    Wire w{};
+    w.num_pts = 2;
+    w.pts[0] = start;
+    w.pts[1] = end;
+    ws.push_back(w);
+    return ws;
+  }
+
+  // step one: horizontal and vertical bend-one turns
+  Wire h, v;
+  h.num_pts = 3;
+  v.num_pts = 3;
+  h.pts[0] = start;
+  h.pts[1] = { start.x, end.y };
+  h.pts[2] = end;
+
+  v.pts[0] = start;
+  v.pts[1] = { end.x, start.y };
+  v.pts[2] = end;
+
+  ws.push_back(v);
+  ws.push_back(h);
+
+  // step two: all bend-two turns
+  for (int a = start.x + 1; a < end.x; a++) {
+    Wire w;
+    w.num_pts = 4;
+    w.pts[0] = start;
+    w.pts[1] = { a, start.y };
+    w.pts[2] = { a, end.y };
+    w.pts[3] = end;
+    ws.push_back(w);
+  }
+
+  for (int b = start.y + 1; b < end.y; b++) {
+    Wire w;
+    w.num_pts = 4;
+    w.pts[0] = start;
+    w.pts[1] = { start.x, b };
+    w.pts[2] = { end.x, b };
+    w.pts[3] = end;
+    ws.push_back(w);
+  }
+
+  // step three: all bend-three turns
+  for (int j = start.x + 1; j < end.x; j++) {
+    for (int k = start.y + 1; k < end.y; k++) {
+      // intermediary point is (j, k)
+      Wire h, v;
+      h.num_pts = 5;
+      v.num_pts = 5;
+
+      // double-horizontal
+      h.pts[0] = start;
+      h.pts[1] = { j, start.y };
+      h.pts[2] = { j, k };
+      h.pts[3] = { end.x, k };
+      h.pts[4] = end;
+
+      // double-vertical
+      v.pts[0] = start;
+      v.pts[1] = { start.x, k };
+      v.pts[2] = { j, k };
+      v.pts[3] = { j, end.y };
+      v.pts[4] = end;
+
+      // horizontal-vertical or vertical-horizontal collapse into a bend-2 turn!
+      ws.push_back(h);
+      ws.push_back(v);
+    }
+  }
+  return ws;
+}
+
+bool point_in_wire(Wire w, Point p) {
+  for (int i = 0; i < w.num_pts-1; i++) {
+    Point a = w.pts[i];
+    Point b = w.pts[i+1];
+    if (a.y == b.y == p.y) {
+      if(a.x <= p.x <= b.x ||
+          b.x <= p.x <= a.x) return true;
+    }
+    if (a.x == b.x == p.x) {
+      if (a.y <= p.y <= b.y ||
+          b.y <= p.y <= a.y) return true;
+    }
+  }
+  return false;
+}
+// calculate the cost for a new wire n, ignoring a past wire o,
+// given the occupancy matrix
+int cost_for_path(Wire o, Wire n, matrix_t &occupancy) {
+  int cost = 0;
+  for (Point p: n) {
+    int occ = occupancy[p.y][p.x];
+    if (point_in_wire(o, p)) {
+      occ--;
+    }
+    cost += occ * occ;
+  }
+  return cost;
+}
+
+void reroute(Wire old, Wire n, matrix_t &occupancy) {
+  for (Point p: old)
+    occupancy[p.y][p.x]--;
+
+  for (Point p: n)
+    occupancy[p.y][p.x]++;
+
+  return;
+}
+
+// WITHIN WIRES SOLUTION
+void solve_within_wires(
+    matrix_t &occupancy,
+    wire_set_t &wires,
+    int dim_x, int dim_y, int num_wires,
+    int num_threads) {
+
+    for (int t = 0; t < N_ITERS; t++) {
+      // TIME STEP LOOP
+      #pragma omp parallel for num_threads(num_threads)
+      for (auto &wire: wires) { // holy shit auto is a thing
+        Point start = wire.pts[0];
+        Point end = wire.pts[wire.num_pts - 1];
+        if (on_same_line(start, end)) continue;
+        int min_cost = MAX_COST;
+        Wire best_path = wire;
+        wire_set_t all_wires = get_all_wires(start, end);
+        for (auto new_path: all_wires) {
+          int new_cost = cost_for_path(wire, new_path, occupancy);
+          if (new_cost < min_cost) {
+            min_cost = new_cost;
+            best_path = new_path;
+          }
+        }
+        reroute(wire, best_path, occupancy);
+        wire = best_path;
+      }
+    }
+}
+
+// SEQUENTIAL SOLUTION
+void solve_sequential(
+    matrix_t &occupancy,
+    wire_set_t &wires,
+    int dim_x, int dim_y, int num_wires) {
+
+    for (int t = 0; t < N_ITERS; t++) {
+      // TIME STEP LOOP
+      for (auto &wire: wires) { // holy shit auto is a thing
+        if (on_same_line(wire.pts[0], wire.pts[wire.num_pts - 1])) continue;
+        int min_cost = MAX_COST;
+        Wire best_path = wire;
+        for (auto new_path: get_all_wires(wire.pts[0], wire.pts[wire.num_pts - 1])) {
+          int new_cost = cost_for_path(wire, new_path, occupancy);
+          if (new_cost <= min_cost) {
+            min_cost = new_cost;
+            best_path = new_path;
+          }
+        }
+        reroute(wire, best_path, occupancy);
+        wire = best_path;
+      }
+    }
+}
+
+void print_stats(const matrix_t &occupancy) {
   int max_occupancy = 0;
   long long total_cost = 0;
 
@@ -154,18 +336,25 @@ int main(int argc, char *argv[]) {
   fin >> dim_x >> dim_y >> num_wires;
 
   std::vector<Wire> wires(num_wires);
-  std::vector occupancy(dim_y, std::vector<int>(dim_x));
+  std::vector occupancy(dim_y, std::vector<int>(dim_x, 0)); // give each value 418 which is high
   std::cout << "Question Spec: dim_x=" << dim_x << ", dim_y=" << dim_y
             << ", number of wires=" << num_wires << '\n';
 
-  // TODO (student code start): Read the wire information from file, 
+  // TODO (student code start): Read the wire information from file,
   // you may need to change this if you define the wire structure differently.
+  Wire empty{};
+  empty.num_pts = 0;
   for (auto &wire : wires) {
-    fin >> wire.start_x >> wire.start_y >> wire.end_x >> wire.end_y;
-    wire.move_x_start = true;
-    wire.move_x_end = false;
-    wire.mid_x = wire.end_x;
-    wire.mid_y = wire.start_y;
+    wire.num_pts = 3;
+    fin >> wire.pts[0].x >> wire.pts[0].y >> wire.pts[2].x >> wire.pts[2].y;
+    if (wire.pts[0].x == wire.pts[2].x || wire.pts[0].y == wire.pts[2].y) {
+      wire.pts[1] = wire.pts[2];
+      wire.num_pts = 2;
+    } else {
+      wire.pts[1].x = wire.pts[0].x;
+      wire.pts[1].y = wire.pts[2].y;
+    }
+    reroute(empty, wire, occupancy);
   }
 
   /* Initialize any additional data structures needed in the algorithm */
@@ -185,10 +374,12 @@ int main(int argc, char *argv[]) {
     Don't use global variables.
     Use OpenMP to parallelize the algorithm.
   */
-  
+
+//  solve_sequential(occupancy, wires, dim_x, dim_y, num_wires);
   // initialize wires
   // Within wires
   if (parallel_mode == 'W') {
+    solve_within_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads);
     // within wires
   } else {
     // across wires
@@ -215,8 +406,3 @@ int main(int argc, char *argv[]) {
   validate_wire_t keypoint representation in order to run checker and
   write output
 */
-validate_wire_t Wire::to_validate_format(void) const {
-  validate_wire_t w;
-  
-  return w;
-}

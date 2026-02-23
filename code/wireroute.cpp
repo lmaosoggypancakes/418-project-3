@@ -107,30 +107,31 @@ wire_set_t get_all_wires(Point start, Point end) {
   return ws;
 }
 
-bool point_in_wire(Wire w, Point p) {
+bool point_in_wire(const Wire &w, const Point &p) {
   for (int i = 0; i < w.num_pts-1; i++) {
     Point a = w.pts[i];
     Point b = w.pts[i+1];
-    if (a.y == b.y == p.y) {
-      if(a.x <= p.x <= b.x ||
-          b.x <= p.x <= a.x) return true;
+    if (a.y == b.y && b.y == p.y) {
+      if (a.x > b.x)
+        return (b.x <= p.x && p.x <= a.x);
+      else
+      	return (a.x <= p.x && p.x <= b.x);
     }
-    if (a.x == b.x == p.x) {
-      if (a.y <= p.y <= b.y ||
-          b.y <= p.y <= a.y) return true;
+    if (a.x == b.x && b.x == p.x) {
+      if (a.y > b.y)
+	return (b.y <= p.y && p.y <= a.y);
+      else
+	return (a.y <= p.y && p.y <= b.y);
     }
   }
   return false;
 }
 // calculate the cost for a new wire n, ignoring a past wire o,
 // given the occupancy matrix
-int cost_for_path(Wire o, Wire n, matrix_t &occupancy) {
+int cost_for_path(const Wire &o, const Wire &n, const matrix_t &occupancy) {
   int cost = 0;
-  for (Point p: n) {
+  for (const Point &p: n) {
     int occ = occupancy[p.y][p.x];
-    if (point_in_wire(o, p)) {
-      occ--;
-    }
     cost += occ * occ;
   }
   return cost;
@@ -153,13 +154,16 @@ void solve_within_wires(
     int dim_x, int dim_y, int num_wires,
     int num_threads) {
 
+    Wire empty{};
     for (int t = 0; t < N_ITERS; t++) {
       // TIME STEP LOOP
-      #pragma omp parallel for num_threads(num_threads)
-      for (auto &wire: wires) { // holy shit auto is a thing
+      #pragma omp parallel for num_threads(num_threads) schedule(static)
+      for (int i = 0; i < num_wires; i++) { // holy shit auto is a thing
+	Wire wire = wires[i];
         Point start = wire.pts[0];
         Point end = wire.pts[wire.num_pts - 1];
         if (on_same_line(start, end)) continue;
+	reroute(wire, empty, occupancy); // unroute the normal wire
         int min_cost = MAX_COST;
         Wire best_path = wire;
         wire_set_t all_wires = get_all_wires(start, end);
@@ -170,8 +174,8 @@ void solve_within_wires(
             best_path = new_path;
           }
         }
-        reroute(wire, best_path, occupancy);
-        wire = best_path;
+        reroute(empty, best_path, occupancy);
+        wires[i] = best_path;
       }
     }
 }
@@ -182,9 +186,11 @@ void solve_sequential(
     wire_set_t &wires,
     int dim_x, int dim_y, int num_wires) {
 
+    Wire empty{};
     for (int t = 0; t < N_ITERS; t++) {
       // TIME STEP LOOP
       for (auto &wire: wires) { // holy shit auto is a thing
+	reroute(wire, empty, occupancy);
         if (on_same_line(wire.pts[0], wire.pts[wire.num_pts - 1])) continue;
         int min_cost = MAX_COST;
         Wire best_path = wire;

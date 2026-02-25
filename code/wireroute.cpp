@@ -19,7 +19,6 @@
 #include <omp.h>
 #include <unistd.h>
 
-#define N_ITERS 5
 #define MAX_COST 999999999
 
 typedef std::vector<Wire> wire_set_t;
@@ -156,10 +155,12 @@ void solve_within_wires(
     matrix_t &occupancy,
     wire_set_t &wires,
     int dim_x, int dim_y, int num_wires,
-    int num_threads, float prob) {
+    int num_threads, float prob,
+    int iters) {
+
     Wire empty{};
     std::cout << "solving within wires\n";
-    for (int t = 0; t < N_ITERS; t++) {
+    for (int t = 0; t < iters; t++) {
       // TIME STEP LOOP
       for (Wire &wire: wires) { // holy shit auto is a thing
         Point &start = wire.pts[0];
@@ -210,15 +211,17 @@ void solve_across_wires(
     matrix_t &occupancy,
     wire_set_t &wires,
     int dim_x, int dim_y, int num_wires,
-    int num_threads, float prob) {
+    int num_threads, float prob,
+    int iters, int batch_size) {
+
     Wire empty{};
     std::cout << "solving across wires\n";
     static std::random_device rd;
     static std::mt19937 gen(rd());
 
-    for (int t = 0; t < N_ITERS; t++) {
+    for (int t = 0; t < iters; t++) {
       // TIME STEP LOOP
-      #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads)
+      #pragma omp parallel for schedule(dynamic, batch_size) num_threads(num_threads)
       for (Wire &wire: wires) { // holy shit auto is a thing
         Point &start = wire.pts[0];
         Point &end = wire.pts[wire.num_pts - 1];
@@ -439,11 +442,11 @@ int main(int argc, char *argv[]) {
   // initialize wires
   // Within wires
   if (parallel_mode == 'W') {
-    solve_within_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob);
+    solve_within_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob, SA_iters);
     // within wires
   } else {
     // across wires
-    solve_across_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob);
+    solve_across_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob, SA_iters, batch_size);
   }
 
   // Student code end

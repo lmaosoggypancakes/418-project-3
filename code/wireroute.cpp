@@ -29,8 +29,16 @@ inline bool on_same_line(Point start, Point end)  {
   return start.x == end.x || start.y == end.y;
 }
 
-wire_set_t get_all_wires(Point start, Point end) {
+wire_set_t get_all_wires(Point &start, Point &end, int num_threads)
+{
+  std::vector<wire_set_t> ws_per_thread(num_threads);
   wire_set_t ws;
+  int dx = std::abs(end.x - start.x);
+  int dy = std::abs(end.y - start.y);
+  int explore = dx + dx + 2 * (dx * dy);
+  if (num_threads > 1)
+    ws.reserve(explore * 3);
+
   // first check if the endpoints lie on the same line.
   if (start.x == end.x || start.y == end.y) {
     Wire w{};
@@ -77,55 +85,47 @@ wire_set_t get_all_wires(Point start, Point end) {
     ws.push_back(w);
   }
 
-  // step three: all bend-three turns
-  for (int j = start.x + 1; j < end.x; j++) {
-    for (int k = start.y + 1; k < end.y; k++) {
+  #pragma omp parallel num_threads(num_threads)
+  {
+    int threadid = omp_get_thread_num();
+    wire_set_t &wst = ws_per_thread[threadid];
+    // step three: all bend-three turns
+    #pragma omp for schedule(static, 64)
+    for (int j = start.x + 1; j < end.x; j++) {
+      for (int k = start.y + 1; k < end.y; k++) {
       // intermediary point is (j, k)
-      Wire h, v;
-      h.num_pts = 5;
-      v.num_pts = 5;
+        Wire h, v;
+        h.num_pts = 5;
+        v.num_pts = 5;
 
       // double-horizontal
-      h.pts[0] = start;
-      h.pts[1] = { j, start.y };
-      h.pts[2] = { j, k };
-      h.pts[3] = { end.x, k };
-      h.pts[4] = end;
+        h.pts[0] = start;
+        h.pts[1] = { j, start.y };
+        h.pts[2] = { j, k };
+        h.pts[3] = { end.x, k };
+        h.pts[4] = end;
 
       // double-vertical
-      v.pts[0] = start;
-      v.pts[1] = { start.x, k };
-      v.pts[2] = { j, k };
-      v.pts[3] = { j, end.y };
-      v.pts[4] = end;
-
-      // horizontal-vertical or vertical-horizontal collapse into a bend-2 turn!
-      ws.push_back(h);
-      ws.push_back(v);
+        v.pts[0] = start;
+        v.pts[1] = { start.x, k };
+        v.pts[2] = { j, k };
+        v.pts[3] = { j, end.y };
+        v.pts[4] = end;
+         // horizontal-vertical or vertical-horizontal collapse into a bend-2 turn!
+        wst.push_back(h);
+        wst.push_back(v);
+      }
     }
   }
+
+  for (auto &wst: ws_per_thread) {
+    ws.insert(ws.end(), std::make_move_iterator(wst.begin()),
+                        std::make_move_iterator(wst.end()));
+  }
+
   return ws;
 }
 
-bool point_in_wire(const Wire &w, const Point &p) {
-  for (int i = 0; i < w.num_pts-1; i++) {
-    Point a = w.pts[i];
-    Point b = w.pts[i+1];
-    if (a.y == b.y && b.y == p.y) {
-      if (a.x > b.x)
-        return (b.x <= p.x && p.x <= a.x);
-      else
-      	return (a.x <= p.x && p.x <= b.x);
-    }
-    if (a.x == b.x && b.x == p.x) {
-      if (a.y > b.y)
-	return (b.y <= p.y && p.y <= a.y);
-      else
-	return (a.y <= p.y && p.y <= b.y);
-    }
-  }
-  return false;
-}
 // calculate the cost for a new wire n, ignoring a past wire o,
 // given the occupancy matrix
 int cost_for_path(const Wire &o, const Wire &n, const matrix_t &occupancy) {
@@ -139,10 +139,14 @@ int cost_for_path(const Wire &o, const Wire &n, const matrix_t &occupancy) {
 
 void reroute(Wire old, Wire n, matrix_t &occupancy) {
   for (Point p: old)
+  {
     occupancy[p.y][p.x]--;
+  }
 
   for (Point p: n)
+  {
     occupancy[p.y][p.x]++;
+  }
 
   return;
 }
@@ -152,57 +156,107 @@ void solve_within_wires(
     matrix_t &occupancy,
     wire_set_t &wires,
     int dim_x, int dim_y, int num_wires,
-    int num_threads) {
-
+    int num_threads, float prob) {
     Wire empty{};
+    std::cout << "solving within wires\n";
     for (int t = 0; t < N_ITERS; t++) {
       // TIME STEP LOOP
-      #pragma omp parallel for num_threads(num_threads) schedule(static)
-      for (int i = 0; i < num_wires; i++) { // holy shit auto is a thing
-	Wire wire = wires[i];
-        Point start = wire.pts[0];
-        Point end = wire.pts[wire.num_pts - 1];
+      for (Wire &wire: wires) { // holy shit auto is a thing
+        Point &start = wire.pts[0];
+        Point &end = wire.pts[wire.num_pts - 1];
         if (on_same_line(start, end)) continue;
-	reroute(wire, empty, occupancy); // unroute the normal wire
-        int min_cost = MAX_COST;
-        Wire best_path = wire;
-        wire_set_t all_wires = get_all_wires(start, end);
-        for (auto new_path: all_wires) {
-          int new_cost = cost_for_path(wire, new_path, occupancy);
-          if (new_cost < min_cost) {
-            min_cost = new_cost;
-            best_path = new_path;
+        wire_set_t all_wires;
+        int min_cost;
+        Wire best_path;
+        reroute(wire, empty, occupancy); // unroute the normal wire
+        min_cost = MAX_COST;
+        best_path = wire;
+        all_wires = get_all_wires(start, end, num_threads);
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+
+        float p = (double(std::rand()) / (RAND_MAX));
+        if (0.f <= p && p <= prob)
+          best_path = all_wires[std::uniform_int_distribution<>(
+                  0, all_wires.size()-1)(gen)];
+        else {
+          #pragma omp parallel for schedule(static) num_threads(num_threads)
+          for (size_t i = 0; i < all_wires.size(); i++) {
+            const Wire new_path = all_wires[i];
+            int new_cost;
+            new_cost = cost_for_path(wire, new_path, occupancy);
+            if (new_cost < min_cost  && new_path.num_pts >= wire.num_pts)
+            #pragma omp critical
+            {
+              min_cost = new_cost;
+              best_path = new_path;
+            }
           }
+         }
+
+        if (best_path == wire) {
+          continue;
+        } else {
+          reroute(empty, best_path, occupancy);
+          wire = best_path;
         }
-        reroute(empty, best_path, occupancy);
-        wires[i] = best_path;
       }
     }
 }
 
-// SEQUENTIAL SOLUTION
-void solve_sequential(
+
+// ACROSS WIRES SOLUTION
+void solve_across_wires(
     matrix_t &occupancy,
     wire_set_t &wires,
-    int dim_x, int dim_y, int num_wires) {
-
+    int dim_x, int dim_y, int num_wires,
+    int num_threads, float prob) {
     Wire empty{};
+    std::cout << "solving across wires\n";
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+
     for (int t = 0; t < N_ITERS; t++) {
       // TIME STEP LOOP
-      for (auto &wire: wires) { // holy shit auto is a thing
-	reroute(wire, empty, occupancy);
-        if (on_same_line(wire.pts[0], wire.pts[wire.num_pts - 1])) continue;
-        int min_cost = MAX_COST;
-        Wire best_path = wire;
-        for (auto new_path: get_all_wires(wire.pts[0], wire.pts[wire.num_pts - 1])) {
-          int new_cost = cost_for_path(wire, new_path, occupancy);
-          if (new_cost <= min_cost) {
-            min_cost = new_cost;
-            best_path = new_path;
+      #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads)
+      for (Wire &wire: wires) { // holy shit auto is a thing
+        Point &start = wire.pts[0];
+        Point &end = wire.pts[wire.num_pts - 1];
+        if (on_same_line(start, end)) continue;
+        wire_set_t all_wires;
+        int min_cost;
+        Wire best_path;
+        #pragma omp critical
+        {
+          reroute(wire, empty, occupancy); // unroute the normal wire
+        }
+        min_cost = MAX_COST;
+        best_path = wire;
+        all_wires = get_all_wires(start, end, num_threads);
+        float p = (double(std::rand()) / (RAND_MAX));
+        if (0.f <= p && p <= prob)
+          best_path = all_wires[std::uniform_int_distribution<>(
+                  0, all_wires.size()-1)(gen)];
+        else {
+          for (Wire &new_path: all_wires) {
+            int new_cost;
+            new_cost = cost_for_path(wire, new_path, occupancy);
+            if (new_cost < min_cost)
+            {
+              min_cost = new_cost;
+              best_path = new_path;
+            }
           }
         }
-        reroute(wire, best_path, occupancy);
-        wire = best_path;
+
+        if (best_path == wire) {
+          continue;
+        } else
+        #pragma omp critical
+        {
+          reroute(empty, best_path, occupancy);
+          wire = best_path;
+        }
       }
     }
 }
@@ -329,7 +383,7 @@ int main(int argc, char *argv[]) {
   std::cout << "Batch size: " << batch_size << '\n';
 
   std::ifstream fin(input_filename);
-
+//  omp_set_num_threads(num_threads);
   if (!fin) {
     std::cerr << "Unable to open file: " << input_filename << ".\n";
     exit(EXIT_FAILURE);
@@ -350,9 +404,9 @@ int main(int argc, char *argv[]) {
   // you may need to change this if you define the wire structure differently.
   Wire empty{};
   empty.num_pts = 0;
-  for (auto &wire : wires) {
-    wire.num_pts = 3;
+  for (auto &wire: wires) {
     fin >> wire.pts[0].x >> wire.pts[0].y >> wire.pts[2].x >> wire.pts[2].y;
+    wire.num_pts = 3;
     if (wire.pts[0].x == wire.pts[2].x || wire.pts[0].y == wire.pts[2].y) {
       wire.pts[1] = wire.pts[2];
       wire.num_pts = 2;
@@ -385,10 +439,11 @@ int main(int argc, char *argv[]) {
   // initialize wires
   // Within wires
   if (parallel_mode == 'W') {
-    solve_within_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads);
+    solve_within_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob);
     // within wires
   } else {
     // across wires
+    solve_across_wires(occupancy, wires, dim_x, dim_y, num_wires, num_threads, SA_prob);
   }
 
   // Student code end

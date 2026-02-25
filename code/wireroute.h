@@ -86,6 +86,9 @@ struct Wire {
         return v;
     }
 
+    bool operator==(const Wire& o) const {
+      return num_pts == o.num_pts && (pts == o.pts);
+    }
     struct Iterator {
         const Wire* w;
         int seg;        // current segment index

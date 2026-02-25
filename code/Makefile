@@ -3,7 +3,9 @@ APP_NAME=wireroute
 OBJS=wireroute.o validate.o
 
 CXX = g++
-CXXFLAGS = -Wall -O3 -std=c++17 -m64 -I. -fopenmp -Wno-unknown-pragmas -pg
+CXXFLAGS = -Wall -O -std=c++17 -m64 -I. -fopenmp -Wno-unknown-pragmas -pg
+#-fsanitize=address
+# -fsanitize=thread
 
 all: $(APP_NAME)
 

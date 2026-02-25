@@ -131,7 +131,7 @@ int cost_for_path(const Wire &o, const Wire &n, const matrix_t &occupancy) {
   int cost = 0;
   for (const Point &p: n) {
     int occ = occupancy[p.y][p.x];
-    cost += occ * occ;
+    cost += (occ + 1) * (occ + 1);
   }
   return cost;
 }

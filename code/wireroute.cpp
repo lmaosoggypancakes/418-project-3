@@ -186,7 +186,7 @@ void solve_within_wires(
             const Wire new_path = all_wires[i];
             int new_cost;
             new_cost = cost_for_path(wire, new_path, occupancy);
-            if (new_cost < min_cost  && new_path.num_pts >= wire.num_pts)
+            if (new_cost < min_cost  || (new_cost == min_cost && new_path.num_pts >= wire.num_pts))
             #pragma omp critical
             {
               min_cost = new_cost;
@@ -222,7 +222,8 @@ void solve_across_wires(
     for (int t = 0; t < iters; t++) {
       // TIME STEP LOOP
       #pragma omp parallel for schedule(dynamic, batch_size) num_threads(num_threads)
-      for (Wire &wire: wires) { // holy shit auto is a thing
+      for (int i = 0; i < wires.size(); i++) { // holy shit auto is a thing
+        Wire &wire = wires[i];
         Point &start = wire.pts[0];
         Point &end = wire.pts[wire.num_pts - 1];
         if (on_same_line(start, end)) continue;
